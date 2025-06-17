@@ -1,0 +1,110 @@
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.callbacks import EarlyStopping
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import matplotlib.pyplot as plt
+import os
+
+file_paths = [
+    'data/Dataset_1_Simulated_Demand_mean_revert.csv',
+    'data/Dataset_2_Simulated_Demand_mean_revert.csv',
+    'data/Dataset_3_Simulated_Demand_mean_revert.csv',
+    'data/Dataset_4_Simulated_Demand_mean_revert.csv',
+    'data/Dataset_5_Simulated_Demand_mean_revert.csv',
+    'data/Dataset_6_Simulated_Demand_mean_revert.csv',
+    'data/Dataset_7_Simulated_Demand_mean_revert.csv',
+    'data/Dataset_8_Simulated_Demand_mean_revert.csv',
+    'data/Dataset_9_Simulated_Demand_mean_revert.csv',
+    'data/Dataset_10_Simulated_Demand_mean_revert.csv'
+#or use your datas
+]
+
+def prepare_data(series, window_size=10):
+    X, y = [], []
+    for i in range(len(series) - window_size):
+        X.append(series[i:i + window_size])
+        y.append(series[i + window_size])
+    return np.array(X), np.array(y)
+
+def create_lstm_model(input_shape):
+    model = Sequential([
+        LSTM(50, input_shape=input_shape),
+        Dense(1, activation='linear')
+    ])
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+results = {}
+
+os.makedirs('results', exist_ok=True)
+
+for i, file_path in enumerate(file_paths):
+    df = pd.read_csv(file_path)
+    df.columns = df.columns.str.strip()
+    demand_series = df['Simulated_Demand'].values.reshape(-1, 1)
+    scaler = MinMaxScaler()
+    scaled_demand = scaler.fit_transform(demand_series).flatten()
+
+    X, y = prepare_data(scaled_demand)
+    X = X.reshape((X.shape[0], X.shape[1], 1))
+
+    split_idx = int(len(X) * 0.8)
+    X_train, X_val = X[:split_idx], X[split_idx:]
+    y_train, y_val = y[:split_idx], y[split_idx:]
+
+    model = create_lstm_model((X_train.shape[1], X_train.shape[2]))
+    early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
+    history = model.fit(
+        X_train, y_train,
+        epochs=100,
+        batch_size=32,
+        validation_data=(X_val, y_val),
+        callbacks=[early_stopping],
+        verbose=1
+    )
+
+    model.save(f'results/LSTM_model_dataset_{i+1}.h5')
+
+    results[f'Dataset_{i+1}'] = {
+        'Final_val_loss': history.history['val_loss'][-1],
+        'Best_val_loss': min(history.history['val_loss']),
+        'Epochs_ran': len(history.history['val_loss'])
+    }
+
+    plt.figure()
+    plt.plot(history.history['loss'], label='Train Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.title(f'Dataset {i+1} Loss Curve')
+    plt.xlabel('Epoch')
+    plt.ylabel('MSE')
+    plt.legend()
+    plt.savefig(f'results/Dataset_{i+1}_Loss_Curve.png')
+    plt.close()
+
+    y_pred_scaled = model.predict(X_val)
+    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).flatten()
+    y_true = scaler.inverse_transform(y_val.reshape(-1, 1)).flatten()
+
+    plt.figure()
+    plt.plot(y_true, label='Actual')
+    plt.plot(y_pred, label='Predicted')
+    plt.title(f'Dataset {i+1} - Actual vs Predicted')
+    plt.xlabel('Time')
+    plt.ylabel('Demand')
+    plt.legend()
+    plt.savefig(f'results/Dataset_{i+1}_Actual_vs_Predicted.png')
+    plt.close()
+
+    mae = mean_absolute_error(y_true, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    results[f'Dataset_{i+1}']['MAE'] = mae
+    results[f'Dataset_{i+1}']['RMSE'] = rmse
+
+results_df = pd.DataFrame(results).T
+results_df.to_csv('results/LSTM_Training_Summary.csv')
+print(results_df)
